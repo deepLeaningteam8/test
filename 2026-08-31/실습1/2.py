@@ -615,6 +615,111 @@ print(test_by_train.max().round(4))
 # [멘티에게 한 문장으로]
 #   "처음 보는 라인이 들어왔을 때 기존 기준을 그대로 쓰면 ..."
 
+print()
+# 스케일링기준 되살리기
+scale_ref = pd.read_csv("스케일링기준.csv", index_col=0, encoding="utf-8-sig")
+batch2 = pd.read_csv("설비배치2.csv", encoding="utf-8-sig")
+
+# 배치2 라인별 행수, 배치1에 없던 라인 확인
+print(batch2["생산라인"].value_counts().sort_index().to_dict())
+new_lines = set(batch2["생산라인"]) - set(df["생산라인"])
+print(new_lines, (batch2["생산라인"].isin(new_lines)).sum())
+
+# 저장된 기준으로 변환
+batch2_transformed = minmax_transform(batch2, scale_ref)
+print(
+    pd.concat([batch2["생산라인"], batch2_transformed["온도"]], axis=1)
+    .groupby("생산라인")["온도"]
+    .agg(["min", "max"])
+    .round(3)
+)
+
+# 라인코드 매핑
+line_code_map = {"A라인": 0, "B라인": 1, "C라인": 2}
+batch2["라인코드"] = batch2["생산라인"].map(line_code_map)
+print(batch2["라인코드"].isna().sum())
+
+# 배치1에 있던 라인만 남겨 재변환
+# batch2_filtered는 abc 라인만 남겨 30행 4열 형태로 변환
+# 온도 진동 회전수 압력
+# batch2_filtered_transformed 는 위에거를 정규화한 값
+batch2_filtered = batch2[batch2["생산라인"].isin(df["생산라인"].unique())].copy()
+batch2_filtered_transformed = minmax_transform(batch2_filtered, scale_ref)
+out_of_range = (
+    ((batch2_filtered_transformed < 0) | (batch2_filtered_transformed > 1)).sum().sum()
+)
+print(out_of_range)
+# batch2_filtered_transformed.agg .... 이거는 기존 30행4열을 정규화한것의 최솟값과 최댓값을 재구성
+print(batch2_filtered_transformed.agg(["min", "max"]).round(3))
+
+# 같은 기준으로 재변환 후 일치 확인
+batch2_filtered_transformed2 = minmax_transform(batch2_filtered, scale_ref)
+print((batch2_filtered_transformed == batch2_filtered_transformed2).all().all())
+
+# 최종 저장
+df.to_csv("정제결과_최종.csv", index=False, encoding="utf-8-sig")
+final = pd.read_csv("정제결과_최종.csv", encoding="utf-8-sig")
+print(
+    final.shape,
+    final.isna().sum().sum(),
+    final["생산라인"].value_counts().sort_index().to_dict(),
+)
+
+
+# - 배치1에 없던 라인: D라인, 10행. 판정도 전부 "미판정"으로
+#   찍혀 있어 처음부터 A/B/C와는 다른 성격의 데이터임을 시사한다.
+#
+# - D라인의 학습기준 변환값: 1.394 ~ 1.502. 문제7에서 본 정상적인
+#   초과(예: 1.001)와는 성격이 완전히 다르다. 구분 기준은 "얼마나
+#   벗어났는가"의 정도다 - 학습 최댓값보다 살짝(1.0~1.05 수준) 넘는
+#   건 "학습 때 못 본 값이 새로 들어온" 정상 신호지만, D라인처럼
+#   1.4~1.5까지 크게 벗어나면 "애초에 이 기준(A/B/C 라인 기준)이
+#   적용될 수 없는 대상"이라는 경보다.
+#   실제로 D라인을 뺀 A/B/C 30행만 다시 변환했을 때도 여전히
+#   1건(압력 -0.003)이 살짝 벗어났는데, 이건 D라인 문제와는 별개로
+#   문제7이 말한 "정상적인 소폭 초과" 사례였다.
+#
+# - 라인코드가 안 붙는 행(D라인 10개)이 그대로 모델에 들어가면,
+#   line_code_map에 "D라인" 키가 없어 .map()이 자동으로 NaN을
+#   채운다. 에러 없이 조용히 NaN이 들어가기 때문에 놓치기 쉽고,
+#   그 상태로 학습/예측에 넣으면 계산이 아예 실패하거나, 혹은
+#   모델이 NaN을 임의의 값으로 잘못 처리해 엉뚱한 예측으로 이어진다.
+#
+# - D라인 처리 방향: "따로 뺀다"를 선택. 근거는 세 가지 -
+#   (1) 정규화값이 정상 범위를 1.4배 넘게 벗어나 기존 A/B/C 기준을
+#       그대로 적용할 수 없고,
+#   (2) 판정이 전부 "미판정"이라 정상/이상 여부를 아직 검증할
+#       근거 자체가 없으며,
+#   (3) 완전히 삭제하면 새로 생긴 설비군에 대한 정보를 통째로
+#       잃게 되므로, 삭제보다는 별도 보관 후 데이터가 쌓이면
+#       D라인 전용 기준을 새로 만드는 쪽이 안전하다.
+#
+# - (검수 중 헷갈렸던 지점) merge/map/groupby처럼 "누락되면 조용히
+#   NaN/누락으로 처리되는" 연산들은 실행 결과가 한눈에 정상처럼
+#   보여도 실제로는 값이 새거나 부풀려질 수 있다는 걸 문제6~8에서
+#   반복 확인했다. 예: 문제6에서 key를 검사일시+생산라인으로만
+#   잡았더니 준중복 때문에 merge가 many-to-many로 뻥튀기됐던 것,
+#   문제8에서 .map()이 D라인을 에러 없이 그냥 NaN으로 넘겨버린 것
+#   - 둘 다 "에러가 안 났다고 결과가 맞다는 뜻은 아니다"라는
+#   같은 교훈을 준다.
+#
+# - (검수 중 헷갈렸던 지점) 문제7 재검증(같은 기준으로 두 번
+#   변환해 일치 확인) 결과가 True로 나온 것도, "당연히 같아야
+#   하는 계산"임에도 실제로 코드로 증명해두는 습관이 재현성을
+#   보장하는 데 의미가 있다는 것을 확인했다 - 결과가 뻔해 보여도
+#   검증 절차 자체를 생략하지 않는 게 검수의 핵심이다.
+
+# [멘티에게 한 문장으로]
+# "처음 보는 라인(D라인)이 들어왔을 때 기존 A/B/C 기준을 그대로
+# 쓰면, 정규화 값이 1.4~1.5까지 정상 범위를 크게 벗어나고
+# 라인코드도 안 붙어 NaN으로 조용히 새어 들어간다. 이건 문제7의
+# '학습 때 못 본 값이 살짝 넘는' 정상적 상황과는 질적으로 다른
+# 문제이므로, 새 라인은 기존 기준에 억지로 끼워 맞추지 말고
+# 별도로 분리해 다뤄야 한다. 특히 map이나 merge처럼 안 맞는 값을
+# 에러 없이 조용히 NaN이나 중복으로 처리하는 연산은, 결과가
+# 매끄러워 보여도 한 번 더 검증해야 한다는 걸 이번 작업에서
+# 여러 번 확인했다."
+
 
 # ----------------------------------------
 # 마무리. 검수보고서.md 작성
