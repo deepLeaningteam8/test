@@ -484,7 +484,110 @@ print(line_compare)
 #
 # [멘티에게 한 문장으로]
 #   "테스트 값이 1을 넘은 건 잘못된 게 아니라 ..."
+print()
+# 시드 6으로 행 순서 섞기
+shuffled = df.sample(frac=1, random_state=6).reset_index(drop=True)
 
+n = len(shuffled)
+i1, i2 = int(n * 0.6), int(n * 0.8)
+train = shuffled.iloc[:i1]
+val = shuffled.iloc[i1:i2]
+test = shuffled.iloc[i2:]
+print(train.shape[0], val.shape[0], test.shape[0])
+
+# 학습 데이터만의 min-max 기준표
+train_minmax = pd.DataFrame(
+    {c: [train[c].min(), train[c].max()] for c in sensors}, index=["min", "max"]
+)
+# 표 전체 기준
+full_minmax = pd.DataFrame(
+    {c: [df[c].min(), df[c].max()] for c in sensors}, index=["min", "max"]
+)
+print(train_minmax.round(2))
+print(full_minmax.round(2))
+
+train_minmax.to_csv("스케일링기준.csv", encoding="utf-8-sig")
+
+
+# 두 기준으로 테스트 데이터 변환하는 함수
+def minmax_transform(data, minmax_table):
+    out = pd.DataFrame(index=data.index)
+    for c in sensors:
+        lo, hi = minmax_table.loc["min", c], minmax_table.loc["max", c]
+        out[c] = (data[c] - lo) / (hi - lo)
+    return out
+
+
+test_by_full = minmax_transform(test, full_minmax)
+test_by_train = minmax_transform(test, train_minmax)
+
+# (1) 0~1 밖으로 나간 값 개수
+out_full = ((test_by_full < 0) | (test_by_full > 1)).sum().sum()
+out_train = ((test_by_train < 0) | (test_by_train > 1)).sum().sum()
+print(out_full, out_train)
+
+# (2) 정확히 0 또는 1인 칸 개수
+exact_full = ((test_by_full == 0) | (test_by_full == 1)).sum().sum()
+exact_train = ((test_by_train == 0) | (test_by_train == 1)).sum().sum()
+print(exact_full, exact_train)
+
+# (3) 학습 기준 변환값 열별 최댓값
+print(test_by_train.max().round(4))
+
+# 시드 6, 6:2:2로 나눈 결과: train 108 / val 36 / test 36
+
+# train_minmax vs full_minmax
+#   온도/진동/압력은 거의 동일, 회전수만 min이 다름
+#   (train 1438.62 vs full 1438.02) - 전체 최솟값을 가진 행이
+#   train이 아니라 val 또는 test 쪽으로 빠졌기 때문.
+
+# 실제 결과 (이번 데이터·시드 6 기준)
+#   0~1 밖 값 개수      - 전체기준: 0 / 학습기준: 0
+#   정확히 0또는1 칸 개수 - 전체기준: 0 / 학습기준: 0
+
+# 왜 "0 0"이 나왔는지 (원리와 실제 결과를 구분해서 기록)
+#   전체기준이 0인 것은 필연: full_minmax는 test까지 포함한 180행
+#   전체로 만든 기준이라, test 값은 수학적으로 그 범위를 절대
+#   벗어날 수 없다. 이게 곧 data leakage의 정의 그 자체다.
+
+#   학습기준도 0으로 나온 것은 "학습기준을 쓰면 항상 0~1 안에
+#   들어온다"는 일반 원리가 아니라, 이번 시드(6)에서는 train과
+#   full의 min/max가 회전수 말고는 거의 같았고, 하필 test 데이터
+#   안에 그 경계를 넘는 값이 없었기 때문에 생긴 이 데이터·이
+#   시드 한정의 결과다. 시드를 바꾸면(예: 다른 random_state)
+#   극값이 test 쪽으로 배정되어 학습기준에서 0~1 밖 값이나
+#   1을 넘는 값이 나올 수 있다 - 그게 오히려 정상적인 상황이다.
+#   즉 "시드 6 + 이 데이터"라는 조건에서는 결과가 재현 가능한
+#   필연이지만, 그 결과가 보여주는 게 일반 원리는 아니라는 점을
+#   구분해야 한다.
+
+# - 전체 기준으로는 0~1 밖 값이 하나도 안 나온다. 좋아 보이지만
+#   이게 누출의 증거다 - 테스트 데이터의 정보(min/max)가 이미
+#   기준을 잡는 단계에 섞여 들어갔기 때문에 test가 그 기준을
+#   벗어날 수가 없는 구조적 결과다.
+#
+# - 전체 기준에서는 테스트 행이 정확히 0이나 1이 되는 칸이 더
+#   많이 나온다(원칙적으로). 그 행의 값이 곧 기준의 min 또는
+#   max였다는 뜻인데, 이는 test 데이터의 극값이 모델을 만드는
+#   기준 자체를 정하는 데 관여했다는 뜻 - 실제 운영에서는
+#   있을 수 없는 상황이다(미래 데이터를 미리 알고 기준을
+#   잡은 셈이므로).
+#
+# - 학습 기준에서 0~1 밖 값이 나오는 건 오류가 아니다. 학습
+#   시점엔 없었던, 더 크거나 작은 값이 새로 들어왔다는 정상적인
+#   신호이며 실제 운영 환경과 같은 상황이다.
+
+# [멘티에게 한 문장으로]
+# "테스트 값이 1을 넘은 건 잘못된 게 아니라, 학습 시점엔 없었던
+# 새로운 값이 들어왔다는 정상적인 신호다. 반대로 전체 기준으로
+# 정규화해서 0~1 밖 값이 하나도 안 나온다면, 그건 테스트 데이터의
+# 정보가 이미 기준을 잡는 데 섞여 들어갔다는(data leakage) 증거이지
+# 모델이 잘 만들어졌다는 뜻이 아니다. 다만 이번 검수에서는 시드 6
+# 기준으로는 학습 기준을 써도 우연히 0~1 밖 값이 하나도 안 나왔는데,
+# 이건 '학습 기준이 항상 안전하다'는 뜻이 아니라 이번 데이터·시드
+# 조합에서 극값이 하필 test로 안 빠졌기 때문이다. 시드를 고정하면
+# 결과는 재현 가능하지만, 그 결과가 일반적으로 항상 성립하는
+# 원리를 증명하는 것은 아니라는 점을 구분해야 한다."
 
 # ----------------------------------------
 # 문제 8. 새 배치가 들어왔다
