@@ -99,6 +99,31 @@ print(compare_df)
 # [멘티에게 한 문장으로]
 #   "값이 0.03 다르면 컴퓨터는 다른 행으로 보지만, 현실에서는 ..."
 
+# 문제 1에서 만든 완전중복 제거본(original_dedup)
+print()
+key_cols = ["검사일시", "생산라인", "설비번호"]
+
+# 키 3열이 같은 행들 (양쪽 다 보여주기 위해 keep=False)
+quasi_dup = original_dedup[original_dedup.duplicated(subset=key_cols, keep=False)]
+quasi_dup_sorted = quasi_dup.sort_values(key_cols)
+
+print(quasi_dup.shape[0])
+print(quasi_dup_sorted[key_cols + ["온도", "압력"]])
+
+# 앞의 것만 남기고 정리
+original_dedup2 = original_dedup.drop_duplicates(subset=key_cols, keep="first")
+
+print(original_dedup2.shape)
+print(original_dedup2["생산라인"].value_counts().sort_index().to_dict())
+
+
+# 같은 시각(2026-08-24 14:00, 2026-08-25 15:00)에 같은 설비(B-101, B-105)를
+# 두 번씩 측정한 기록이 있었는데, 온도는 0.02~0.03도, 압력은 0.02 정도로 값이 미세하게 달라서
+# drop_duplicates()(전체 값 비교)로는 서로 다른 행으로 판정돼 걸러지지 않았다.
+# 이런 차이는 값 저장 과정의 반올림이나 센서 오차 범위 안에서 충분히 생길 수 있는 수준이라
+# 물리적으로는 '같은 순간의 같은 측정'으로 봐야 하므로, 검사일시·생산라인·설비번호 세 열이 같은 행을
+# 준중복으로 간주하고 각 쌍 중 "먼저" 기록된 행만 남기는 방식으로 정리했다.
+# 그 결과 B라인만 62개로 부풀어 있던 행 수가 60개로 줄면서 A/B/C 세 라인이 처음 설계대로 60개씩 균등해졌다.
 
 # ----------------------------------------
 # 문제 3. 이상 탐지를 다시 한다
