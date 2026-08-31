@@ -210,6 +210,72 @@ print(df.groupby("생산라인")["온도"].mean().round(2))
 # [멘티에게 한 문장으로]
 #   "결측을 채우기 전에 이상값부터 봐야 하는 이유는 ..."
 
+print()
+# 진동 열도 계산에 쓰려면 먼저 숫자로 바꿔야 함 (원본이 문자열 "측정불가" 포함)
+df["진동"] = pd.to_numeric(df["진동"], errors="coerce")
+
+# 이상값 포함 / 제외 라인별 온도 평균 비교
+mean_with = df.groupby("생산라인")["온도"].mean()
+mean_without = df[~mask_line].groupby("생산라인")["온도"].mean()
+
+compare_outlier = pd.concat([mean_with, mean_without], axis=1)
+compare_outlier.columns = ["포함", "제외"]
+compare_outlier["차이"] = (compare_outlier["포함"] - compare_outlier["제외"]).round(2)
+compare_outlier["포함"] = compare_outlier["포함"].round(2)
+compare_outlier["제외"] = compare_outlier["제외"].round(2)
+print(compare_outlier)
+
+# 이상값 제외한 라인 평균으로 온도 결측 채우기
+line_temp_mean_clean = df[~mask_line].groupby("생산라인")["온도"].mean().round(2)
+df["온도"] = df.apply(
+    lambda row: (
+        line_temp_mean_clean[row["생산라인"]] if pd.isna(row["온도"]) else row["온도"]
+    ),
+    axis=1,
+)
+
+# 압력, 진동은 라인별 중앙값으로 채우기
+line_pressure_median = df.groupby("생산라인")["압력"].median().round(2)
+df["압력"] = df.apply(
+    lambda row: (
+        line_pressure_median[row["생산라인"]] if pd.isna(row["압력"]) else row["압력"]
+    ),
+    axis=1,
+)
+
+line_vib_median = df.groupby("생산라인")["진동"].median().round(2)
+df["진동"] = df.apply(
+    lambda row: (
+        line_vib_median[row["생산라인"]] if pd.isna(row["진동"]) else row["진동"]
+    ),
+    axis=1,
+)
+
+# 결과 확인
+print(df[["온도", "압력", "진동", "회전수"]].isna().sum().sum())
+print(df.groupby("생산라인")["온도"].mean().round(2))
+
+mentee_temp_mean = mentee.groupby("생산라인")["온도"].mean().round(2)
+print(mentee_temp_mean)
+
+
+# 결측을 채우기 전에 이상값부터 봐야 하는 이유는, 이상값이 낀 채로 구한 평균 자체가 이미 오염된 값이기 때문이다
+# A라인은 이상값 포함 평균(73.35)과 제외 평균(72.05)이 1.30도나 차이 났는데,
+# 이 오염된 평균으로 결측을 채우면 결측 채우기가 이상값의 왜곡까지 그대로 물려받게 된다.
+# 반면 압력·진동처럼 중앙값으로 채우면 극단값 하나에 쉽게 흔들리지 않아 이 문제가 상대적으로 덜 발생한다.
+
+# [df.apply(axis=1) 이해 메모]
+#
+# df.apply(lambda row: ..., axis=1)
+# - df를 한 행씩 순서대로 훑으면서, 그 행 전체(모든 컬럼)를
+#   "row"라는 이름에 담아 함수 안으로 넘겨준다.
+# - row["컬럼명"]으로 그 행의 특정 값을 꺼낼 수 있다.
+#   (예: row["생산라인"] -> 이 행의 생산라인 값, row["온도"] -> 이 행의 온도 값)
+# - axis=1은 "행 단위로 훑는다"는 뜻 (axis=0이면 열 단위)
+# - line_temp_mean_clean 같은 3행짜리 라인별 평균표는 순회 대상이 아니라,
+#   row["생산라인"]으로 찾아오는 "참고용 조회표(사전)" 역할만 한다.
+# - 즉 180행짜리 df를 한 줄씩 보면서, 그 줄의 라인이 뭔지 확인해
+#   3행짜리 참고표에서 맞는 값을 찾아와 채우는 구조.
 
 # ----------------------------------------
 # 문제 5. 한 번 걸러내고 끝내면 안 된다
@@ -230,6 +296,71 @@ print(df.groupby("생산라인")["온도"].mean().round(2))
 # [멘티에게 한 문장으로]
 #   "큰 이상값 하나가 표준편차를 부풀려서 작은 이상값을 ..."
 
+print()
+print(df.loc[df["생산라인"] == "C라인", "압력"].std(ddof=0).round(2))
+
+round_num = 1
+while True:
+    z_pressure = df.groupby("생산라인")["압력"].transform(
+        lambda x: (x - x.mean()) / x.std(ddof=0)
+    )
+    mask_pressure = z_pressure.abs() > 3
+    count = mask_pressure.sum()
+    print(f"{round_num}차 걸린 개수:", count)
+
+    if count == 0:
+        break
+
+    print(df.loc[mask_pressure, ["생산라인", "압력"]])
+
+    # 걸린 값을 그 라인의 중앙값으로 교체
+    line_pressure_median = df.groupby("생산라인")["압력"].median()
+    df.loc[mask_pressure, "압력"] = (
+        df.loc[mask_pressure, "생산라인"].map(line_pressure_median).round(2)
+    )
+
+    print(
+        f"{round_num}차 처리 후 C라인 압력 표준편차:",
+        df.loc[df["생산라인"] == "C라인", "압력"].std(ddof=0).round(2),
+    )
+    round_num += 1
+
+print(df["생산라인"].value_counts().sort_index().to_dict())
+
+# 1차 처리 전후 C라인 압력 표준편차: 1.25 -> 0.23으로 크게 줄었다.
+#   13.1, 11.8, 12.5처럼 극단적으로 큰 값 3개가 표준편차를 부풀리고 있었다.
+#
+# 2차에서 1차 때는 안 걸리던 7.88, 7.95가 새로 걸렸다.
+#   1차 때는 표준편차가 1.25로 컸기 때문에, 7.88/7.95 정도의 튐은
+#   상대적으로 작아 보여 |z|>3 기준을 못 넘었다. 1차 처리로 표준편차가
+#   0.23까지 줄어들자, 같은 값이라도 이번엔 "상대적으로 크게 튀는 값"이
+#   되어 2차에서 잡힌 것.
+#
+# 3차에서 0건이 되어 반복을 멈췄다.
+#   만약 1차만 돌리고 끝냈다면, 큰 이상값에 가려져 있던 7.88/7.95 같은
+#   작은(하지만 실제 존재하는) 이상값을 놓쳤을 것이다.
+#
+# A라인/B라인은 왜 안 걸렸나: 코드 자체는 groupby("생산라인")로
+# A/B/C 전 라인을 동일한 기준(라인별 z-score, |z|>3)으로 검사한다.
+# 다만 A라인 표준편차 0.12, B라인 0.12로 애초에 값이 안정적이라
+# 최대 |z|가 각각 1.77, 1.85에 그쳐 3을 넘지 못했다.
+# 반면 C라인은 표준편차 1.26으로 산포가 커서 최대 |z|가 4.77까지
+# 나와 계속 걸린 것 — "C라인만 검사하는 코드"가 아니라
+# "전 라인을 검사했는데 실제 이상치가 C라인에만 있었던 것"이다.
+# 만약 C라인만 하드코딩해서 처리했다면 지금은 결과가 같아 보여도,
+# 나중에 다른 라인에 이상치가 생기는 데이터가 들어오면 그걸
+# 놓치는 좁은 코드가 됐을 것이다.
+#
+# 이상치는 값만 교체했으므로(행 삭제 없음) 라인별 행 수는
+# {'A라인': 60, 'B라인': 60, 'C라인': 60}으로 처리 전후 동일하다.
+
+# [멘티에게 한 문장으로]
+# 큰 이상값 하나(13.1, 11.8, 12.5)가 압력 표준편차를 1.25까지 부풀려서,
+# 7.88·7.95처럼 상대적으로 작은 이상값은 그 그늘에 가려져 1차에서는
+# 안 걸렸다. 큰 값을 먼저 정리해 표준편차가 0.23으로 줄어들자 비로소
+# 그 작은 이상값들이 드러났는데, 이건 우연이 아니라 '표준편차가 극단값에
+# 민감하다'는 성질 때문에 구조적으로 반복해야만 잡히는 이상치다.
+# 그래서 한 번만 걸러내지 않고 3차에서 0건이 될 때까지 반복 검사해야 한다.
 
 # ----------------------------------------
 # 문제 6. 같은 행인데 스케일 값이 다르다
