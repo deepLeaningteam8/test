@@ -22,9 +22,9 @@
 import numpy as np
 import pandas as pd
 
-원본 = pd.read_csv("로그배치1.csv", encoding="utf-8-sig")
-지표 = ["CPU온도", "전력", "응답시간", "메모리"]
-키열 = ["수집시각", "구역", "센서ID"]
+original = pd.read_csv("로그배치1.csv", encoding="utf-8-sig")
+metrics = ["CPU온도", "전력", "응답시간", "메모리"]
+key_columns = ["수집시각", "구역", "센서ID"]
 
 
 # ----------------------------------------
@@ -38,7 +38,7 @@ import pandas as pd
 # (2) CPU온도의 z-점수를 (가) 표 전체 기준, (나) 같은 구역 기준 두 가지로 구해
 #     임계값 2.5를 넘는 개수를 한 줄에 출력하세요. 표준편차는 ddof=0 입니다.
 #     (나)로 걸린 행의 수집시각·구역·센서ID·CPU온도를 구역 순으로 출력하고,
-#     구역별 CPU온도 평균도 출력해 근거로 삼으세요.
+#     구역별 CPU온도 평균도 출력해 근거로 삼으세요
 #
 # 기대 출력: 2
 #                             수집시각      구역     센서ID  CPU온도    메모리
@@ -57,6 +57,39 @@ import pandas as pd
 #            59   2026-08-25 03:00  Z3-찰리  SN-C-04   62.5
 #            {'Z1-알파': 59.08, 'Z2-브라보': 67.83, 'Z3-찰리': 77.74}
 
+original["전력"] = pd.to_numeric(original["전력"], errors="coerce")
+original = original.drop_duplicates()
+print(original[["수집시각", "구역", "센서ID"]].duplicated().sum())
+
+key_cols = ["수집시각", "구역", "센서ID"]
+quasi_dup = original[original.duplicated(subset=key_cols, keep=False)]
+
+print(quasi_dup[key_cols + ["CPU온도", "메모리"]])
+
+original = original.drop_duplicates(subset=key_cols, keep="first").reset_index(
+    drop=True
+)
+print(original.shape)
+
+
+print(original["구역"].value_counts().to_dict())
+
+z_all = (original["CPU온도"] - original["CPU온도"].mean()) / original["CPU온도"].std(
+    ddof=0
+)
+count_all = (z_all.abs() > 2.5).sum()
+
+z_line = original.groupby("구역")["CPU온도"].transform(
+    lambda x: (x - x.mean()) / x.std(ddof=0)
+)
+mask_line = z_line.abs() > 2.5
+count_line = mask_line.sum()
+
+print(count_all, count_line)
+
+print(original.loc[mask_line, key_cols + ["CPU온도"]].sort_values("구역"))
+
+print(original.groupby("구역")["CPU온도"].mean().round(2).to_dict())
 
 # ----------------------------------------
 # 문제 2. 고치는 데도 순서가 있다
@@ -98,7 +131,68 @@ import pandas as pd
 #            3차: 0건
 #            {'Z1-알파': 60, 'Z2-브라보': 60, 'Z3-찰리': 60}
 #            (180, 9)
+print()
 
+mean_with = original.groupby("구역")["CPU온도"].mean().round(3)
+print(mean_with)
+mean_without = original[~mask_line].groupby("구역")["CPU온도"].mean().round(3)
+
+compare_mean = pd.merge(
+    mean_with, mean_without, on="구역", suffixes=("_x", "_y")
+).rename(columns={"CPU온도_x": "포함", "CPU온도_y": "제외"})
+
+compare_mean["차이"] = compare_mean["포함"] - compare_mean["제외"]
+
+print(compare_mean)
+
+fill_cpu_temp = original[~mask_line].groupby("구역")["CPU온도"].mean()
+original["CPU온도"] = original["CPU온도"].fillna(original["구역"].map(fill_cpu_temp))
+
+fill_memory = original.groupby("구역")["메모리"].median()
+electro = original.groupby("구역")["전력"].median()
+
+original["메모리"] = original["메모리"].fillna(original["구역"].map(fill_memory))
+original["전력"] = original["전력"].fillna(original["구역"].map(electro))
+
+print(original.isna().sum().sum())
+
+print(original.groupby("구역")["CPU온도"].mean().round(2).to_dict())
+
+
+print(original.loc[original["구역"] == "Z3-찰리", "메모리"].std(ddof=0).round(2))
+
+
+# 여기부터 while 해야됨
+
+mem_cnt = 1
+while True:
+    z_memory = original.groupby("구역")["메모리"].transform(
+        lambda x: (x - x.mean()) / x.std(ddof=0)
+    )
+    mask_mem = z_memory.abs() > 3
+    print(f"{mem_cnt}차: {mask_mem.sum()}건")
+
+    if mask_mem.sum() == 0:
+        break
+
+    mem_cnt += 1
+
+    print(original.loc[mask_mem, ["구역", "메모리"]])
+    median_mem = original[~mask_mem].groupby("구역")["메모리"].median().round()
+
+    original.loc[mask_mem, "메모리"] = original.loc[mask_mem, "구역"].map(median_mem)
+    print(original.loc[original["구역"] == "Z3-찰리", "메모리"].std(ddof=0).round(2))
+
+print(original["구역"].value_counts().to_dict())
+
+
+zone_map = {"Z1-알파": 0, "Z2-브라보": 1, "Z3-찰리": 2}
+original.insert(2, "구역코드", original["구역"].map(zone_map))
+
+original.to_csv("정제결과_최종.csv", index=False, encoding="utf-8-sig")
+
+df = pd.read_csv("정제결과_최종.csv", encoding="utf-8-sig")
+print(df.shape)
 
 # ----------------------------------------
 # 문제 3. 스케일 기준은 학습에서만 잡고, 저장해서 다시 쓴다
@@ -138,6 +232,98 @@ import pandas as pd
 #            {'CPU온도': 0.062, '전력': 0.047, '응답시간': 0.044, '메모리': 0.064}
 #            {'CPU온도': 1.064, '전력': 1.045, '응답시간': 1.068, '메모리': 0.99}
 #            True
+print()
+# 시드 6으로 행 순서 섞기
+shuffled = df.sample(frac=1, random_state=6).reset_index(drop=True)
+
+n = len(shuffled)
+i1, i2 = int(n * 0.6), int(n * 0.8)
+train = shuffled.iloc[:i1]
+val = shuffled.iloc[i1:i2]
+test = shuffled.iloc[i2:]
+print(train.shape[0], val.shape[0], test.shape[0])
+
+# 학습 데이터만의 min-max 기준표
+train_minmax = pd.DataFrame(
+    {c: [train[c].min(), train[c].max()] for c in metrics}, index=["min", "max"]
+)
+# 표 전체 기준
+full_minmax = pd.DataFrame(
+    {c: [df[c].min(), df[c].max()] for c in metrics}, index=["min", "max"]
+)
+
+compare = pd.concat(
+    [train_minmax.T.add_prefix("학습"), full_minmax.T.add_prefix("전체")], axis=1
+)
+
+print(compare)
+train_minmax.to_csv("스케일링기준.csv", encoding="utf-8-sig")
+
+
+# 두 기준으로 테스트 데이터 변환하는 함수
+def minmax(data, minmax_table):
+    out = pd.DataFrame(index=data.index)
+    for c in metrics:
+        lo, hi = minmax_table.loc["min", c], minmax_table.loc["max", c]
+        out[c] = (data[c] - lo) / (hi - lo)
+    return out
+
+
+test_full = minmax(test, full_minmax)
+test_train = minmax(test, train_minmax)
+
+# 0~1 밖으로 나간 값 수
+out_full = ((test_full < 0) | (test_full > 1)).sum().sum()
+out_train = ((test_train < 0) | (test_train > 1)).sum().sum()
+print(out_full, out_train)
+
+# (2) 정확히 0 또는 1인 칸 수
+exact_full = ((test_full == 0) | (test_full == 1)).sum().sum()
+exact_train = ((test_train == 0) | (test_train == 1)).sum().sum()
+print(exact_full, exact_train)
+
+# (3) 학습 기준 변환값 열별 최댓값
+print(test_train.max().round(4).to_dict())
+
+scale = pd.read_csv("스케일링기준.csv", index_col=0, encoding="utf-8-sig")
+log_batch2 = pd.read_csv("로그배치2.csv", encoding="utf-8-sig")
+# 로그배치2도 독같이 전력을 숫자로 변환
+log_batch2["전력"] = pd.to_numeric(log_batch2["전력"], errors="coerce")
+# 배치2 구역별 행수, 배치1에 없던 구역 확인
+print(log_batch2["구역"].value_counts().sort_index().to_dict())
+new_line = set(log_batch2["구역"]) - set(df["구역"])
+print(len(new_line), list(new_line))
+
+# zone_map
+
+
+# 배치2 전체를 학습 기준으로 변환
+scale_batch2 = minmax(log_batch2, scale)
+
+# 구역별 CPU온도 변환값의 최소·최대
+print(
+    scale_batch2.assign(구역=log_batch2["구역"])
+    .groupby("구역")["CPU온도"]
+    .agg(["min", "max"])
+    .round(3)
+)
+
+# 구역코드가 안 붙는 행 수 (배치1에 없던 구역 = 매핑에 없어 NaN이 되는 행)
+log_batch2_구역코드 = log_batch2["구역"].map(zone_map)
+print("구역코드 결측:", log_batch2_구역코드.isna().sum())
+
+# 배치1에 있던 구역만 남겨 다시 변환
+b2_filter = log_batch2[log_batch2["구역"].isin(df["구역"].unique())].copy()
+scaled_filtered = minmax(b2_filter, scale)
+
+out_of_range = ((scaled_filtered < 0) | (scaled_filtered > 1)).sum().sum()
+print("0~1 밖:", out_of_range)
+print(scaled_filtered.min().round(3).to_dict())
+print(scaled_filtered.max().round(3).to_dict())
+
+# 한 번 더 변환해 결과가 같은지 확인
+scaled_filtered_again = minmax(b2_filter, scale)
+print(scaled_filtered.equals(scaled_filtered_again))
 
 
 # ----------------------------------------
